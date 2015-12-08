@@ -37,28 +37,38 @@ struct local_nl {
 }local_nl;
 	
 
-static int macCallback(struct nl_msg *msg, void *arg)
+static int macCallback_handler(struct nl_msg *msg, void *arg)
 {
 	struct nlmsghdr* ret_hdr = nlmsg_hdr(msg);
-
-
+	printf("Call back invoked - indicating we got something back from kernel\n");
+	return NL_SKIP;
+}
+static int macCallback_finish_handler(struct nl_msg *msg, void *arg)
+{
+	struct nlmsghdr* ret_hdr = nlmsg_hdr(msg);
+	printf("Call back invoked - indicating we got something back from kernel finish-one\n");
+	return NL_SKIP;
 }
 
 int main(int argc, char *argv[])
 {
-	int i = 0,ret = 0, mac_policy;
+	int i = 0,ret = 0, mac_policy, err = 1;
 	FILE *fp;
+	char *policy;
+	
 
-	if(argc < 4) {
-		fprintf(stderr ,"Usage:- ./exe <Mac-Address-List> <Mac-Address-file> <Policy -- allow/deny>\n");
+	if(argc < 3) {
+		fprintf(stderr ,"Usage:- ./exe <Mac-Address-file> <Policy -- allow/deny>\n");
 		exit(1);
 	}
+	
+	policy = argv[2];
 
 	
 	//Get the mac policy
-	if(argv[2] == "allow")
+	if(!strcmp(policy,"allow"))
 		mac_policy = 1;
-	else if(argv[2] == "deny")
+	else if(strcmp(policy,"deny"))
 		mac_policy = 0;	
 	else {
 		fprintf(stderr, "Undefined Mac Policy\n");
@@ -81,22 +91,22 @@ int main(int argc, char *argv[])
 
 	//Store the mac's in our list
 	while(fgets(mac_info.mac_list, MAC_ADDR_SIZE,fp) != NULL) { 
-		printf("Mac addresses read from File is %s at %d location",mac_info.mac_list);
+		printf("Mac addresses read from File is %s",mac_info.mac_list);
 		mac_info.num_of_mac_for_acl = i++;
-		mac_info.mac_acl[i] = mac_info.mac_list;
+//		mac_info.mac_acl[i] = &mac_info.mac_list;
 	}
 
 
-	//Print the mac addresses stored in our array
+	/*/Print the mac addresses stored in our array
 	for(i = 0; i < mac_info.num_of_mac_for_acl; i++){
 		printf("Mac addresses stored are %s",mac_info.mac_acl[i]);
-	}
+	}*/
 	
 	//Allocate a netlink socket
 	local_nl.sk = nl_socket_alloc();
 
 	//Connect sk to generic netlink
-	if(!genl_connect(local_nl.sk)){
+	if(genl_connect(local_nl.sk)){
 		fprintf(stderr ,"Failed to connect/bind to generic netlink socket\n");
 		nl_socket_free(local_nl.sk);
 		exit(1);
@@ -107,8 +117,20 @@ int main(int argc, char *argv[])
 	local_nl.nl80211_driverId = genl_ctrl_resolve(local_nl.sk, "nl80211");
 
 	//Attach a return callback
-	nl_socket_modify_cb(local_nl.sk, NL_CB_VALID, NL_CB_CUSTOM,
-			macCallback, NULL);
+	/*nl_socket_modify_cb(local_nl.sk, NL_CB_VALID, NL_CB_CUSTOM,
+			macCallback, NULL);*/
+
+
+	//Register a callback for return netlink message
+	struct nl_cb *cb = nl_cb_alloc(NL_CB_DEFAULT);
+	if(!cb){
+		fprintf(stderr, "Failed to allocate nl callback\n");
+		nl_socket_free(local_nl.sk);
+		fclose(fp);
+		return -ENOMEM;
+	}
+	
+	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, macCallback_handler,NULL);
 
 	
 	//Form a message
@@ -138,14 +160,23 @@ int main(int argc, char *argv[])
 	}
 	
 	nlmsg_free(acl_msg);
+
 	
 	//Try to send the message to nl80211 and wait for it to finish and in return invoke our callback
-	ret = nl_send_auto(local_nl.sk,final_msg);
-	if(ret)
-		fprintf(stderr,"Failed to send the netlink message for setting MAC ACL's\n");
+	//ret = nl_send_auto(local_nl.sk,final_msg);
+	ret = nl_send_auto_complete(local_nl.sk,final_msg);
 	
-	//Block for message to return and invoke our handler
-	nl_recvmsgs_default(local_nl.sk);
+	if(ret < 0)
+		fprintf(stderr,"Failed to send the netlink message for setting MAC ACL's\n");
+	else {
+		printf("Sent the message for MAC ACL to nl80211\n");
+		//Before sending the message, install finishing handler
+		nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, macCallback_finish_handler, &err);
+		//Block for message to return and invoke our handler
+		while(err > 0) {
+			nl_recvmsgs(local_nl.sk, cb);
+		}
+	}
 
 	return ret;
 	
