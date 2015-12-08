@@ -5,25 +5,37 @@
 #include <libnl3/netlink/genl/ctrl.h>
 #include <libnl3/netlink/socket.h>
 #include <net/if.h>
+#include <linux/if_ether.h>
 
 #include <linux/nl80211.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <linux/types.h>
+
+#define MAC_FILE_PATH "mac_file"
+#define MAC_ADDR_SIZE 19 //18 characters
 
 struct mac_addr_local {
-	u8 addr[ETH_LEN];
-}
+	uint8_t addr[ETH_ALEN];
+};
 
 //Put a structure here to hold mac addresses
 struct mac_maintain {
- 	u8 mac_acl_policy;	
-	int num_of_macs;
-	const char *mac_list[NL80211_ATTR_MAC_ACL_MAX];
+ 	uint8_t mac_acl_policy;	
+	unsigned int num_of_mac_for_acl;
+	struct mac_addr_local mac_acl[0];
+	char *mac_list[MAC_ADDR_SIZE];
 	
 };
 
+
+struct local_nl {
+	struct nl_sock *sk;
+	int nl80211_driverId;
+}local_nl;
+	
 
 static int macCallback(struct nl_msg *msg, void *arg)
 {
@@ -34,10 +46,11 @@ static int macCallback(struct nl_msg *msg, void *arg)
 
 int main(int argc, char *argv[])
 {
-	int i,ret = 0, mac_policy;
+	int i = 0,ret = 0, mac_policy;
+	FILE *fp;
 
-	if(argc < 3) {
-		fprintf(stderr ,"Usage:- ./exe <Mac-Address-List> <Policy -- allow/deny>\n");
+	if(argc < 4) {
+		fprintf(stderr ,"Usage:- ./exe <Mac-Address-List> <Mac-Address-file> <Policy -- allow/deny>\n");
 		exit(1);
 	}
 
@@ -54,68 +67,85 @@ int main(int argc, char *argv[])
 	
 	
 	//Read mac-addresses from a file and store in our structure 
-	
+	fp = fopen(MAC_FILE_PATH, "r");
+	if(!fp){
+		fprintf(stderr, "Failed to open mac address file\n");
+		exit(1);
+	}
+	else
+		printf("Mac-Address file opened successfully with FD=%d\n",fp);
+
+
 
 	struct mac_maintain mac_info;
 
 	//Store the mac's in our list
-	for(i = 0)
+	while(fgets(mac_info.mac_list, MAC_ADDR_SIZE,fp) != NULL) { 
+		printf("Mac addresses read from File is %s at %d location",mac_info.mac_list);
+		mac_info.num_of_mac_for_acl = i++;
+		mac_info.mac_acl[i] = mac_info.mac_list;
+	}
 
+
+	//Print the mac addresses stored in our array
+	for(i = 0; i < mac_info.num_of_mac_for_acl; i++){
+		printf("Mac addresses stored are %s",mac_info.mac_acl[i]);
+	}
 	
 	//Allocate a netlink socket
-	nl_sock *sk = nl_socket_alloc();
+	local_nl.sk = nl_socket_alloc();
 
 	//Connect sk to generic netlink
-	if(!genl_connect(sk))
+	if(!genl_connect(local_nl.sk)){
 		fprintf(stderr ,"Failed to connect/bind to generic netlink socket\n");
-		nl_socket_free(sk);
+		nl_socket_free(local_nl.sk);
 		exit(1);
 	}
 
 
 	//Find the nl80211 driver ID
-	nl80211_driverId = genl_ctrl_resolve(sk, "nl80211");
+	local_nl.nl80211_driverId = genl_ctrl_resolve(local_nl.sk, "nl80211");
 
 	//Attach a return callback
-	nl_socket_modify_cb(sk, NL_CB_VALID, NL_CB_CUSTOM,
+	nl_socket_modify_cb(local_nl.sk, NL_CB_VALID, NL_CB_CUSTOM,
 			macCallback, NULL);
 
 	
 	//Form a message
-	nl_msg *acl = nlmsg_alloc();
+	struct nl_msg *acl_msg = nlmsg_alloc();
 	
-	if(!acl)
+	if(!acl_msg)
 		return -ENOMEM;
 	
 	//Add number of mac-addresess to message
-	for(i = 0, i < mac_list->num_of_mac_acl ;i++) {
-		if(nla_put(acl, i + 1, ETH_ALEN, mac_list->arr[i].addr)) {
-			nlmsg_free(acl);
-		}
+	for(i = 0; i < mac_info.num_of_mac_for_acl; i++) {
+		if(nla_put(acl_msg, i + 1, ETH_ALEN, mac_info.mac_acl[i].addr))
+			nlmsg_free(acl_msg);
+	}
 
 	//Form the final netlink message
 	//Setup the message
-	nl_msg *final_msg = nlmsg_alloc();
+	struct nl_msg *final_msg = nlmsg_alloc();
 	
-	nl80211_commands cmd = NL80211_CMD_SET_MAC_ACL;
+	enum nl80211_commands cmd = NL80211_CMD_SET_MAC_ACL;
 	
-	if(!(genlmsg_put(final_msg, 0, 0, nl80211_driverId, 0, flags, cmd, 0) ||
-	nla_put_32(final_msg, NL80211_ATTR_ACL_POLICY, mac_policy ? NL80211_ACL_POLICY_DENY_UNLESS_LISTED : NL80211_ACL_POLICY_ACCEPT_UNLESS_LISTED) ||
-	nla_put_nested(final_msg, NL80211_ATTR_MAC_ADDRS,acl))) {
+	if(!(genlmsg_put(final_msg, 0, 0, local_nl.nl80211_driverId, 0, 0, cmd, 0) ||
+	nla_put_u32(final_msg, NL80211_ATTR_ACL_POLICY, mac_policy ? NL80211_ACL_POLICY_DENY_UNLESS_LISTED : NL80211_ACL_POLICY_ACCEPT_UNLESS_LISTED) ||
+	nla_put_nested(final_msg, NL80211_ATTR_MAC_ADDRS,acl_msg))) {
 		nlmsg_free(final_msg);
-		nlmsg_free(acl);
+		nlmsg_free(acl_msg);
 		return -ENOMEM;
 	}
 	
-	nlmsg_free(acl);
+	nlmsg_free(acl_msg);
 	
 	//Try to send the message to nl80211 and wait for it to finish and in return invoke our callback
-	ret = nl_send_auto(sk,final_msg);
+	ret = nl_send_auto(local_nl.sk,final_msg);
 	if(ret)
 		fprintf(stderr,"Failed to send the netlink message for setting MAC ACL's\n");
 	
 	//Block for message to return and invoke our handler
-	nl_recvmsg_default(sk);
+	nl_recvmsgs_default(local_nl.sk);
 
 	return ret;
 	
