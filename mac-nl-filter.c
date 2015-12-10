@@ -163,8 +163,8 @@ int main(int argc, char *argv[])
 
 	
 	//Try to send the message to nl80211 and wait for it to finish and in return invoke our callback
+	ret = nl_send_auto(local_nl.sk,final_msg);
 	//ret = nl_send_auto(local_nl.sk,final_msg);
-	ret = nl_send_auto_complete(local_nl.sk,final_msg);
 	
 	if(ret < 0)
 		fprintf(stderr,"Failed to send the netlink message for setting MAC ACL's\n");
