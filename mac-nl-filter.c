@@ -14,7 +14,7 @@
 #include <errno.h>
 #include <linux/types.h>
 
-#define MAC_FILE_PATH "mac_file"
+#define MAC_FILE_PATH "file_mac"
 #define MAC_ADDR_SIZE 19 //18 characters
 
 struct mac_addr_local {
@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
 	while(fgets(mac_info.mac_list, MAC_ADDR_SIZE,fp) != NULL) { 
 		printf("Mac addresses read from File is %s",mac_info.mac_list);
 		mac_info.num_of_mac_for_acl = i++;
-//		mac_info.mac_acl[i] = &mac_info.mac_list;
+		mac_info.mac_acl[i] = mac_info.mac_list;
 	}
 
 
@@ -143,6 +143,7 @@ int main(int argc, char *argv[])
 	for(i = 0; i < mac_info.num_of_mac_for_acl; i++) {
 		if(nla_put(acl_msg, i + 1, ETH_ALEN, mac_info.mac_acl[i].addr))
 			nlmsg_free(acl_msg);
+		printf("NLA_PUT failed\n");
 	}
 
 	//Form the final netlink message
@@ -173,9 +174,9 @@ int main(int argc, char *argv[])
 		//Before sending the message, install finishing handler
 		nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, macCallback_finish_handler, &err);
 		//Block for message to return and invoke our handler
-		while(err > 0) {
+		/*while(err > 0) {
 			nl_recvmsgs(local_nl.sk, cb);
-		}
+		}*/
 	}
 
 	return ret;
